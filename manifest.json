@@ -1,0 +1,11 @@
+{
+	"id": "obsidian-memex",
+	"name": "Obsidian Memex",
+	"version": "1.0.1",
+	"minAppVersion": "0.15.0",
+	"description": "Review, generate, and add flashcards for your notes using AI",
+	"author": "Boopathi K",
+	"authorUrl": "https://github.com/programmerraja",
+	"fundingUrl": "https://buymeacoffee.com/programmerraja",
+	"isDesktopOnly": true
+}
