@@ -1,0 +1,4 @@
+- remove Dec UI let only keep chart and note review queue
+- Allow user to choose different AI provider like openAi, cluade , google custom where give endpoint and apikey use this SDK for easy https://www.npmjs.com/package/@unified-llm/core remove existing ai manager 
+- we need to show alert or list of notes that are due for review today and if we missed we need to introduce some gamefication to make user to review the notes
+- Also how we need to ask question after use review the notes to check the understanding of the user. 

@@ -1,6 +1,8 @@
-import { 
-  ChatModels, 
+import {
+  ChatModels,
   EntryItemGeneration,
+  NOTE_QUIZ_PROMPT,
+  NoteQuizItem,
 } from "@/constants";
 import { errorMessage } from "@/utils/errorMessage";
 import { APIUserAbortError, BadRequestError } from "openai/error";
@@ -146,7 +148,7 @@ export default class AIManager {
     setAIString: (response: string) => void,
     setAIEntries: (response: EntryItemGeneration[]) => void
   ): Promise<{ str: string; entries: EntryItemGeneration[] }> {
-    
+
     try {
       // Push user message into messageHistory
       this.messageHistory.push({ role: 'user' as const, content: newMessageModded });
@@ -167,26 +169,26 @@ export default class AIManager {
 
         const content = chunk.choices[0]?.delta?.content || '';
         fullResponse += content;
-        
+
         const { chatResponse, entries } = this.parseFlashcards(fullResponse);
-        
+
         // Only update if we have new content
         if (chatResponse && chatResponse !== lastChatResponse) {
           setAIString(chatResponse);
           lastChatResponse = chatResponse;
         }
-        
+
         if (entries.length > lastEntries.length) {
           setAIEntries(entries);
           lastEntries = entries;
         }
       }
-      
+
       const finalParse = this.parseFlashcards(fullResponse);
-      
+
       // Push assistant message response into messageHistory
       this.messageHistory.push({
-        role: 'assistant', 
+        role: 'assistant',
         content: fullResponse
       });
 
@@ -204,7 +206,7 @@ export default class AIManager {
             setAIString(`Oops! Your message is ${actualTokens} tokens. Please keep it under ${maxTokens} tokens (about ${Math.round(Number(maxTokens) * 0.75)} words).`);
             return { str: '', entries: [] };
           }
-          
+
           // Check for string length error
           const lengthMatch = message.match(/maximum length (\d+).*length (\d+)/);
           if (lengthMatch) {
@@ -215,12 +217,37 @@ export default class AIManager {
             setAIString(`Oops! Your message is too long (approximately ${estimatedTokens} tokens). Please keep it under ${maxTokens} tokens (about ${Math.round(maxTokens * 0.75)} words).`);
             return { str: '', entries: [] };
           }
-                  
+
         } else {
           errorMessage(`Streaming AI response ${e}`);
         }
       }
       return { str: '', entries: [] };
+    }
+  }
+  async generateNoteQuiz(content: string): Promise<NoteQuizItem[]> {
+    if (!this.client) return [];
+
+    try {
+      const response = await this.client.chat.completions.create({
+        model: this.chatModel,
+        messages: [
+          { role: 'system', content: NOTE_QUIZ_PROMPT },
+          { role: 'user', content: `Note content:\n\n${content}` }
+        ],
+        // response_format: { type: "json_object" } // Optional depending on model
+      });
+
+      let jsonString = response.choices[0].message.content || "{}";
+
+      // Basic cleanup for markdown code blocks
+      jsonString = jsonString.replace(/^```json\n/, '').replace(/\n```$/, '');
+
+      const parsed = JSON.parse(jsonString);
+      return parsed.questions || [];
+    } catch (e) {
+      console.error("Quiz generation failed", e);
+      return [];
     }
   }
 }

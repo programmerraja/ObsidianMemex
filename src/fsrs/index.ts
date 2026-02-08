@@ -19,6 +19,6 @@ export type {
   Entry,
   DeckMetaData
 } from './models'
-export { State, Rating } from './models'
+export { State, Rating, EntryType } from './models'
 
 export * from './convert'

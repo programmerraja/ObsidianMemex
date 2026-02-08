@@ -4,8 +4,9 @@ export interface SRSettings {
   defaultModel: ChatModels;
   defaultModelDisplayName: ChatModelDisplayNames;
   openAIApiKey: string;
-	inlineSeparator: string;
-	multilineSeparator: string;
+  inlineSeparator: string;
+  multilineSeparator: string;
   includeCurrentFile: boolean;
   onboardingStatus: OnboardingStatus;
+  autoTrackNotes: boolean;
 }

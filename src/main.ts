@@ -1,4 +1,4 @@
-import { Plugin, WorkspaceLeaf, Notice } from 'obsidian';
+import { Plugin, WorkspaceLeaf, Notice, TFile } from 'obsidian';
 import { ViewType, SubviewType, DEFAULT_SETTINGS } from '@/constants';
 import MainView from '@/views/MainView';
 import { SRSettingTab } from '@/components/SettingsPage';
@@ -9,6 +9,8 @@ import MemoryManager from './memory/memoryManager';
 import { DeckManager } from './fsrs/Deck';
 import AIManager from './LLM/AIManager';
 import { errorMessage } from './utils/errorMessage';
+import { NoteScheduler } from './note/NoteScheduler';
+import { NoteStatus } from './note/NoteStatus';
 
 export default class SRPlugin extends Plugin {
 	settings: SRSettings;
@@ -16,15 +18,41 @@ export default class SRPlugin extends Plugin {
 	deckManager: DeckManager;
 	aiManager: AIManager;
 	subviewType: SubviewType;
+	noteScheduler: NoteScheduler;
+	noteStatus: NoteStatus;
 
 	async onload(): Promise<void> {
-		
+
 		await this.loadSettings();
 
 		this.subviewType = SubviewType.REVIEW; // Update this to change default view
 		this.memoryManager = new MemoryManager(this.app.vault)
 		this.deckManager = new DeckManager(this.memoryManager, this.app.vault, this.settings)
-		
+		this.noteScheduler = new NoteScheduler(this.app);
+		this.noteStatus = new NoteStatus(this, this.noteScheduler);
+
+		this.registerEvent(
+			this.app.workspace.on('file-open', (file) => {
+				this.noteStatus.update(file);
+			})
+		);
+
+		this.registerEvent(
+			this.app.metadataCache.on('changed', (file) => {
+				if (file === this.app.workspace.getActiveFile()) {
+					this.noteStatus.update(file);
+				}
+			})
+		);
+
+		this.registerEvent(
+			this.app.vault.on('create', (file) => {
+				if (this.settings.autoTrackNotes && file instanceof TFile && file.extension === 'md') {
+					this.noteScheduler.trackNote(file);
+				}
+			})
+		);
+
 		const key = this.settings.openAIApiKey;
 		const decryptedKey = EncryptionService.getDecryptedKey(key);
 		this.aiManager = AIManager.getInstance(this.settings.defaultModel, decryptedKey);
@@ -44,6 +72,21 @@ export default class SRPlugin extends Plugin {
 			name: "Review your flashcards",
 			callback: () => {
 				this.toggleView(ViewType.MAIN, SubviewType.REVIEW);
+			}
+		});
+
+		this.addCommand({
+			id: 'track-note',
+			name: 'Enable Incremental Review for this Note',
+			checkCallback: (checking: boolean) => {
+				const file = this.app.workspace.getActiveFile();
+				if (file) {
+					if (!checking) {
+						this.noteScheduler.trackNote(file);
+					}
+					return true;
+				}
+				return false;
 			}
 		});
 
@@ -88,7 +131,7 @@ export default class SRPlugin extends Plugin {
 				}
 			}
 			await this.saveData(this.settings);
-		} catch(e) {
+		} catch (e) {
 			errorMessage(e);
 		}
 	}
@@ -110,17 +153,17 @@ export default class SRPlugin extends Plugin {
 		const leaves = this.app.workspace.getLeavesOfType(viewType);
 		if (leaves.length === 0) {
 			await this.app.workspace
-			.getLeaf(false)
-			.setViewState({
-				type: viewType,
-				active: true,
-			});
+				.getLeaf(false)
+				.setViewState({
+					type: viewType,
+					active: true,
+				});
 			this.app.workspace.revealLeaf(
 				this.app.workspace.getLeavesOfType(viewType)[0],
 			);
 		}
 	}
-	
+
 	async deactivateView(viewType: ViewType) {
 		// Let Obsidian handle view lifecycle
 	}

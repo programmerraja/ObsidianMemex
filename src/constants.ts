@@ -35,6 +35,11 @@ export type EntriesGeneration = z.infer<typeof entriesGeneration>;
 
 export type EntryItemGeneration = z.infer<typeof entryItem>;
 
+export interface NoteQuizItem {
+  question: string;
+  answer: string;
+}
+
 export const entriesGenerationSchema = {
   type: "object",
   properties: {
@@ -71,9 +76,28 @@ export enum ViewType {
 export enum SubviewType {
   CHAT = "sr-main-chat-view",
   REVIEW = "sr-main-review-view",
+  NOTE_REVIEW = "sr-main-note-review-view",
 }
 
 export const DEFAULT_SYSTEM_PROMPT = "You are Obsidian Spaced Repetition Copilot, a helpful assistant that creates and edits spaced repetition flashcards from Obsidian notes."
+
+export const NOTE_QUIZ_PROMPT = `
+You are an expert tutor. Your goal is to help the user active recall the core concepts of their note.
+Read the provided note content carefully.
+Generate 3 conceptual questions that cover the most important insights or structure of the note.
+Do NOT ask trivial details (dates, names) unless they are central to the concept.
+Do NOT just ask "What is X?". Ask "How does X relate to Y?" or "Why is Z important?".
+
+Output format: JSON
+{
+  "questions": [
+    {
+      "question": "The question text",
+      "answer": "A concise answer or key points to look for."
+    }
+  ]
+}
+`;
 
 export const PROXY_SERVER_PORT = 53001;
 
@@ -169,6 +193,7 @@ export const DEFAULT_SETTINGS: SRSettings = {
   multilineSeparator: "?",
   includeCurrentFile: true,
   onboardingStatus: OnboardingStatus.Import,
+  autoTrackNotes: false,
 };
 
 // From here https://github.com/open-spaced-repetition/fsrs4anki/blob/main/fsrs4anki_scheduler.js#L108

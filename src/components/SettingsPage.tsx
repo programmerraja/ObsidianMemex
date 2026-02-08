@@ -39,12 +39,12 @@ export class SRSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('OpenAI API key')
       .setDesc(`Add an API key to chat with your notes and generate flashcards. Note that you can still do flashcard reviews without AI`)
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.openAIApiKey ? '•'.repeat(16) : '')
-				.onChange((value) => {
-					this.plugin.settings.openAIApiKey = value;
-				}))
+      .addText(text => text
+        .setPlaceholder('Enter your secret')
+        .setValue(this.plugin.settings.openAIApiKey ? '•'.repeat(16) : '')
+        .onChange((value) => {
+          this.plugin.settings.openAIApiKey = value;
+        }))
       .addButton(cb => cb
         .setButtonText('Validate')
         .onClick(() => {
@@ -61,7 +61,7 @@ export class SRSettingTab extends PluginSettingTab {
         .onChange(async (value: ChatModels) => {
           this.plugin.settings.defaultModel = value;
           this.plugin.settings.defaultModelDisplayName = MODEL_TO_DISPLAY_NAME[value];
-          await this.plugin.saveSettings({ defaultModel: true});
+          await this.plugin.saveSettings({ defaultModel: true });
         }));
 
     new Setting(containerEl)
@@ -75,8 +75,19 @@ export class SRSettingTab extends PluginSettingTab {
         })
       )
 
+    new Setting(containerEl)
+      .setName('Auto-track new notes')
+      .setDesc('Automatically enable spaced repetition tracking for newly created notes.')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.autoTrackNotes)
+        .onChange(async (value) => {
+          this.plugin.settings.autoTrackNotes = value;
+          await this.plugin.saveSettings();
+        })
+      );
 
-        
+
+
   }
 }
 
