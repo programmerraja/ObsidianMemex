@@ -1,16 +1,18 @@
-import { App, Modal, TFile, Setting } from 'obsidian';
+import { App, Modal, TFile, Setting, Notice } from 'obsidian';
 import SRPlugin from '@/main';
 
 export class NoteReviewModal extends Modal {
     plugin: SRPlugin;
     file: TFile;
+    isPractice: boolean;
     onCloseCallback?: () => void;
 
-    constructor(app: App, plugin: SRPlugin, file: TFile, onCloseCallback?: () => void) {
+    constructor(app: App, plugin: SRPlugin, file: TFile, onCloseCallback?: () => void, isPractice: boolean = false) {
         super(app);
         this.plugin = plugin;
         this.file = file;
         this.onCloseCallback = onCloseCallback;
+        this.isPractice = isPractice;
     }
 
     async onOpen() {
@@ -18,17 +20,18 @@ export class NoteReviewModal extends Modal {
         contentEl.empty();
 
         contentEl.addClass('note-review-modal');
-        contentEl.createEl('h2', { text: `Review: ${this.file.basename}` });
+        const title = this.isPractice ? `Practice: ${this.file.basename}` : `Review: ${this.file.basename}`;
+        contentEl.createEl('h2', { text: title });
 
         // Content Area
         const contentContainer = contentEl.createDiv({ cls: 'note-review-content' });
-        contentContainer.style.minHeight = '200px';
+        contentContainer.style.minHeight = '800px';
         contentContainer.style.padding = '20px';
         contentContainer.style.marginBottom = '20px';
         contentContainer.style.border = '1px solid var(--background-modifier-border)';
         contentContainer.style.borderRadius = '8px';
         contentContainer.style.overflowY = 'auto';
-        contentContainer.style.maxHeight = '400px';
+        contentContainer.style.maxHeight = '800px';
 
         contentContainer.createEl('p', {
             text: 'Generating quiz... 🤖',
@@ -66,13 +69,20 @@ export class NoteReviewModal extends Modal {
         });
 
         // Async fetch quiz
-        const fileContent = await this.app.vault.read(this.file);
-        const questions = await this.plugin.aiManager.generateNoteQuiz(fileContent);
+        let questions = await this.plugin.quizManager.loadQuiz(this.file);
 
-        if (contentContainer.innerText.includes('Generating')) { // Only update if user hasn't clicked Show Note
+        if (!questions || questions.length === 0) {
+            const fileContent = await this.app.vault.read(this.file);
+            questions = await this.plugin.aiManager.generateNoteQuiz(fileContent);
+            if (questions && questions.length > 0) {
+                await this.plugin.quizManager.saveQuiz(this.file, questions);
+            }
+        }
+
+        if (contentContainer.innerText.includes('Generating')) {
             contentContainer.empty();
             if (questions && questions.length > 0) {
-                questions.forEach((q, idx) => {
+                questions.forEach((q: any, idx: number) => {
                     const qEl = contentContainer.createDiv({ cls: 'quiz-item' });
                     qEl.style.marginBottom = '15px';
                     qEl.createEl('h3', { text: `Q${idx + 1}: ${q.question}`, cls: 'theme-text-strong' });
@@ -108,7 +118,11 @@ export class NoteReviewModal extends Modal {
     }
 
     async handleGrade(grade: number) {
-        await this.plugin.noteScheduler.reviewNote(this.file, grade);
+        if (!this.isPractice) {
+            await this.plugin.noteScheduler.reviewNote(this.file, grade);
+        } else {
+            new Notice('Practice complete! No changes to schedule.');
+        }
         this.close();
         if (this.onCloseCallback) this.onCloseCallback();
     }

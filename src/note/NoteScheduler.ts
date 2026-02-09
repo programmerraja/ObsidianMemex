@@ -1,6 +1,7 @@
 import { TFile, App, Notice } from 'obsidian';
 import { FSRS, Card, Rating, State, createEmptyCard, Entry, EntryType, Grade } from '@/fsrs';
 import { DEFAULT_FSRS_WEIGHTS } from '@/constants';
+import SRPlugin from '@/main';
 
 interface NoteReviewData {
     due: string;
@@ -11,10 +12,12 @@ interface NoteReviewData {
 
 export class NoteScheduler {
     app: App;
+    plugin: SRPlugin; // Need plugin to access settings
     fsrs: FSRS;
 
-    constructor(app: App) {
+    constructor(app: App, plugin: SRPlugin) {
         this.app = app;
+        this.plugin = plugin;
         this.fsrs = new FSRS({
             w: DEFAULT_FSRS_WEIGHTS,
         });
@@ -34,9 +37,30 @@ export class NoteScheduler {
         return !!cache?.frontmatter?.['sr-due'];
     }
 
+    private isIgnored(file: TFile): boolean {
+        const excludedPaths = this.plugin.settings.excludedPaths;
+        // Check folder/file path exclusion
+        if (excludedPaths.some(p => file.path.startsWith(p))) {
+            return true;
+        }
+
+        // Check frontmatter exclusion
+        const cache = this.app.metadataCache.getFileCache(file);
+        if (cache?.frontmatter?.['sr-ignore'] === true) {
+            return true;
+        }
+
+        return false;
+    }
+
     async trackNote(file: TFile): Promise<void> {
         if (this.isTracked(file)) {
             new Notice('This note is already being tracked!');
+            return;
+        }
+
+        if (this.isIgnored(file)) {
+            new Notice('This note is ignored via settings or frontmatter.');
             return;
         }
 
@@ -72,6 +96,8 @@ export class NoteScheduler {
         const allFiles = this.app.vault.getMarkdownFiles();
 
         return allFiles.filter(file => {
+            if (this.isIgnored(file)) return false;
+
             const cache = this.app.metadataCache.getFileCache(file);
             const due = cache?.frontmatter?.['sr-due'];
             return due && due <= today;
@@ -95,7 +121,33 @@ export class NoteScheduler {
         const newCard = recordLog.card;
 
         await this.saveCardToNote(file, newCard);
+
+        // Update Streak
+        await this.updateStreak();
+
         new Notice(`Reviewed: Next due in ${newCard.scheduled_days} days`);
+    }
+
+    private async updateStreak(): Promise<void> {
+        const today = new Date().toISOString().split('T')[0];
+        const lastReview = this.plugin.settings.lastReviewDate;
+
+        if (lastReview === today) {
+            return; // Already reviewed today
+        }
+
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayString = yesterday.toISOString().split('T')[0];
+
+        if (lastReview === yesterdayString) {
+            this.plugin.settings.reviewStreak += 1;
+        } else {
+            this.plugin.settings.reviewStreak = 1; // Reset or start new
+        }
+
+        this.plugin.settings.lastReviewDate = today;
+        await this.plugin.saveSettings();
     }
 
     private loadCardFromNote(file: TFile): Card | null {
@@ -107,9 +159,6 @@ export class NoteScheduler {
 
         // Handle due date parsing (string to Date)
         const dueDate = new Date(f['sr-due']);
-        // If due date is pure YYYY-MM-DD, new Date() might treat as UTC. 
-        // We usually want local end-of-day or start-of-day. 
-        // For now, new Date(string) is fine.
 
         return {
             ...entry,

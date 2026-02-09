@@ -5,10 +5,10 @@ import { TFile } from 'obsidian';
 import SRPlugin from '@/main';
 import MentionsInput from '@/components/mentions/MentionsInput';
 import { ChatMessage } from '@/chatMessage';
-import Mention from '@/components/mentions/Mention'; 
+import Mention from '@/components/mentions/Mention';
 import { useAIState } from '@/hooks/useAIState';
 import { getFileContent, writeCardtoFile } from '@/utils/obsidianFiles';
-import { EnterIcon, RefreshIcon } from '@/components/Icons';
+import { EnterIcon, SendIcon, PlusIcon, BotIcon } from '@/components/Icons';
 import ChatTag from '@/components/chat/ChatTag';
 import { errorMessage } from '@/utils/errorMessage';
 import Markdown from 'react-markdown';
@@ -32,7 +32,7 @@ interface MessageSegmentProps {
   files: TFile[],
 }
 
-const MessageSegment: React.FC<MessageSegmentProps> = ({ 
+const MessageSegment: React.FC<MessageSegmentProps> = ({
   index,
   segment,
   updateHistory,
@@ -46,26 +46,29 @@ const MessageSegment: React.FC<MessageSegmentProps> = ({
 
   // LLM
   const { aiManager } = plugin;
-  const [ currentModel, setModel ] = useAIState(aiManager);
+  const [currentModel, setModel] = useAIState(aiManager);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
 
-  // We create useState in this component for variables that change often, this is used to update overall convo history periodically 
+  // We create useState in this component for variables that change often
   const [aiString, setAIString] = useState<string | null>(segment.aiString);
   const [aiEntries, setAIEntries] = useState<EntryItemGeneration[] | null>(segment.aiEntries);
   const [userMessage, setUserMessage] = useState<string | null>(segment.userMessage);
 
-  const { mentionedFiles, handleFileAdd, removeFile } = useFiles(files, activeFile, plugin.settings.includeCurrentFile); // See commit 7ef47c918bc8f9e8252373cd1286e288c5ce0a91 and 1 commit ahead of it to add cards back in
+  // New state for Flashcard toggle
+  const [shouldGenerateFlashcards, setShouldGenerateFlashcards] = useState(false);
+  const [isGeneratingCards, setIsGeneratingCards] = useState(false);
+
+  const { mentionedFiles, handleFileAdd, removeFile } = useFiles(files, activeFile, plugin.settings.includeCurrentFile);
 
   // Mentions 
   const inputRef = useRef<HTMLDivElement | null>(null);
   const portalRef = useRef<HTMLDivElement | null>(null);
 
-  // Update overall conversation history, this is only done periodically to prevent rapid reloading
-  const { 
-    updateUserMessage, 
-    updateModifiedMessage, 
-    updateAIResponse, 
-    clearMessageHistory 
+  const {
+    updateUserMessage,
+    updateModifiedMessage,
+    updateAIResponse,
+    clearMessageHistory
   } = updateHistory;
 
 
@@ -75,29 +78,30 @@ const MessageSegment: React.FC<MessageSegmentProps> = ({
     setUserMessage(newUserMessage);
   };
 
-  const handleSendMessage = async (event: React.KeyboardEvent<HTMLTextAreaElement> | React.MouseEvent<HTMLDivElement, MouseEvent>) => {
+  const handleSendMessage = async (event: React.KeyboardEvent<HTMLTextAreaElement> | React.MouseEvent<HTMLDivElement, MouseEvent> | React.MouseEvent<HTMLButtonElement, MouseEvent>) => {
 
-    if ('key' in event) { // Handle textarea
-      if (!(event.key === 'Enter' && !event.shiftKey)) return;
-      event.preventDefault(); // Prevents adding a newline to the textarea
+    if ('key' in event) {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+      } else {
+        return;
+      }
     }
+
     if (!userMessage) return;
-    
+
+    // Optimistic UI updates
     setAIString('');
     setAIEntries([]);
-    clearMessageHistory(); // Clear message history from current index
+    clearMessageHistory();
     handleStopGenerating();
+
+    // Switch to view mode immediately
+    setIsEditing(false);
 
     updateUserMessage(userMessage);
 
     let modifiedMessage = `<USER MESSAGE>\n\n${userMessage}</USER MESSAGE>`;
-    const entriesToEdit = messageHistory[index-1]?.aiEntries;
-    if (index !== 0 && entriesToEdit && entriesToEdit.length > 0) {
-      const stringifiedEntries = entriesToEdit.map(entry => 
-        `<flashcard><question>${entry.front}</question><answer>${entry.back}</answer></flashcard>`
-      ).join('\n\n');
-      modifiedMessage += `<FLASHCARDS FOR YOU TO EDIT>\n\n${stringifiedEntries}</FLASHCARDS FOR YOU TO EDIT>`;
-    }
 
     if (mentionedFiles.length > 0) {
       modifiedMessage += `\n\n<REFERENCE FILES>`
@@ -112,27 +116,43 @@ const MessageSegment: React.FC<MessageSegmentProps> = ({
 
     if (index < messageHistory.length - 1) {
       await aiManager.setNewThread(index);
-    } 
+    }
 
     const controller = new AbortController();
     setAbortController(controller);
-    
-    const { str, entries } = await aiManager.streamAIResponse(
-      modifiedMessage,
-      controller,
-      setAIString,
-      setAIEntries
-    );
+
+    // 1. Stream Chat
+    let finalStr = '';
+    try {
+      finalStr = await aiManager.streamChat(
+        modifiedMessage,
+        controller,
+        setAIString
+      );
+    } catch (e) {
+      console.error("Chat stream error", e);
+    }
+
+    // 2. Generate Flashcards (Optional)
+    let finalEntries: EntryItemGeneration[] = [];
+    if (shouldGenerateFlashcards && !controller.signal.aborted) {
+      setIsGeneratingCards(true);
+      // Combine prompt + answer for context
+      const cardContext = `User Question: ${userMessage}\n\nAI Answer: ${finalStr}\n\nReference Material: ${modifiedMessage}`;
+      finalEntries = await aiManager.generateFlashcards(cardContext);
+      setAIEntries(finalEntries);
+      setIsGeneratingCards(false);
+    }
 
     setAbortController(null);
-
-    updateAIResponse(str, entries);
+    updateAIResponse(finalStr, finalEntries);
     addNewMessage();
   }
 
   const handleStopGenerating = () => {
     if (abortController) {
       abortController.abort();
+      setIsGeneratingCards(false);
     }
   };
 
@@ -173,83 +193,209 @@ const MessageSegment: React.FC<MessageSegmentProps> = ({
   };
 
 
+  // State for Display vs Edit mode
+  const [isEditing, setIsEditing] = useState<boolean>(!segment.aiString && !segment.aiEntries);
+
+  const handleSendMessageWrapper = async (e: any) => {
+    await handleSendMessage(e);
+  };
+
   return (
-    <div className="w-full flex flex-col mb-4">
-      <div>        
-        {/* @ts-ignore */}
-        <MentionsInput
-          value={userMessage || ''} 
-          inputRef={inputRef}
-          onChange={handleMentionsChange}
-          className="w-full resize-none p-2 height-auto theme-border border rounded overflow-hidden"
-          placeholder={index === 0 ? 'Remember anything, [[ to include your notes' : 'Ask a follow-up question'}
-          onKeyDown={handleSendMessage}
-          suggestionsPortalHost={portalRef.current}
-        >
-          <Mention
-            trigger="[["
-            // @ts-ignore
-            data={files.map((file) => ({ id: file.path, display: file.path }))}
-            onAdd={(id: string) => handleFileAdd(id)}
-          />
-        </MentionsInput>
-      </div>
-      <div className="flex flex-row flex-wrap items-center justify-start my-2 space-x-4 theme-text-faint [&>*]:cursor-pointer [&>*]:mb-2">
-        <select
-          value={currentModel}
-          onChange={handleModelChange}
-          className="text-center theme-bg-surface theme-border theme-text"
-          style={{ width: '160px' }}
-        >
-          {Object.entries(ChatModelDisplayNames).map(([key, displayName]) => (
-            <option key={key} value={displayName}>
-              {displayName}
-            </option>
-          ))}
-        </select>
-        <div 
-          onClick={async () => {
-            clearAll();
-            if (index === 0) {
-              setUserMessage(null);
-              setAIEntries(null);
-              setAIString(null);
-              setAbortController(null);
-            }
-            await aiManager.setNewThread();
-          }}
-          className="theme-bg-hover rounded px-4 py-2"
-        >
-          + New
+    <div className="w-full flex flex-col mb-2 group">
+
+      {/* Display Mode (Chat Bubbles) */}
+      {!isEditing && (
+        <div className="flex flex-col gap-4">
+          {/* User Message Bubble */}
+          {userMessage && (
+            <div className="flex justify-end w-full">
+              <div className="relative max-w-[85%] bg-[var(--interactive-accent)] text-[var(--text-on-accent)] px-4 py-2.5 rounded-2xl rounded-tr-sm shadow-sm">
+                <div className="whitespace-pre-wrap text-sm">{userMessage}</div>
+
+                {/* Edit Button (Visible on Hover) */}
+                <div
+                  className="absolute -left-8 top-1 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer p-1 theme-text-faint hover:theme-text"
+                  onClick={() => setIsEditing(true)}
+                  title="Edit message"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor" className="size-3.5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Mentions Context (Read Only) */}
+          {mentionedFiles.length > 0 && (
+            <div className="flex justify-end gap-1 flex-wrap opacity-80">
+              {mentionedFiles.map((file, i) => (
+                <div key={file.path} className="text-[10px] px-2 py-0.5 rounded-full theme-bg-surface border theme-border theme-text-muted flex items-center gap-1">
+                  <span className="truncate max-w-[100px]">{file.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* AI Response Bubble */}
+          {(aiString || aiEntries) && (
+            <div className="flex justify-start w-full pr-8">
+              <div className="flex gap-3 max-w-full">
+                <div className="mt-1 shrink-0">
+                  <BotIcon className="size-5 theme-text-accent" />
+                </div>
+                <div className="flex flex-col gap-2 min-w-0">
+                  {aiString && (
+                    <div className="markdown-preview-view p-0 text-sm theme-text leading-relaxed">
+                      <Markdown>{aiString}</Markdown>
+                    </div>
+                  )}
+
+                  {/* Generated Flashcards View */}
+                  {aiEntries?.map((entry, i) => (
+                    <EntryView
+                      handleFeedback={async (feedback: 'y' | 'n') => {
+                        await handleCardFeedback(feedback, entry, i);
+                      }}
+                      front={entry.front || ""}
+                      back={entry.back || ""}
+                      key={`entry-${i}-length-${aiEntries.length}`}
+                    />
+                  ))}
+
+                  {aiEntries && aiEntries.length > 0 && (
+                    <div className='flex items-center gap-2 mt-2'>
+                      {activeFile && activeFile.path.endsWith('.md') ? (
+                        <span className="text-xs theme-text-muted">Adding to {activeFile.name}</span>
+                      ) : (
+                        <span className="text-xs theme-text-warning">Open a file to add cards</span>
+                      )}
+                      <button disabled={activeFile === null} className='text-xs px-3 py-1.5 theme-bg-surface hover:theme-bg-hover border theme-border rounded transition-colors' onClick={addAllCards}>Add all</button>
+                    </div>
+                  )}
+
+                  {abortController && !isGeneratingCards && (
+                    <div className="flex items-center gap-2 text-xs theme-text-muted animate-pulse">
+                      <span>Streaming...</span>
+                      <button className='theme-text-error hover:underline' onClick={handleStopGenerating}>Stop</button>
+                    </div>
+                  )}
+
+                  {isGeneratingCards && (
+                    <div className="flex items-center gap-2 text-xs theme-text-accent animate-pulse p-2 border theme-border rounded bg-blue-500/5">
+                      <span className="animate-spin">✿</span>
+                      <span>Generating flashcards...</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-        <div 
-          onClick={() => {
-            setUserMessage((userMessage || '') + ' [[')
-            inputRef.current?.focus();
-          }} 
-          className="theme-bg-hover rounded px-4 py-2"
-        >
-          <p>{`[[`} for File</p>
-        </div>
-        <div 
-          onClick={async (e) => {await handleSendMessage(e)}}
-          className='flex flex-row items-center space-x-2 theme-bg-hover rounded px-4 py-2'
-        > 
-          <EnterIcon /> 
-          <p>Enter</p> 
-        </div>
-        {aiString && !abortController && (userMessage === messageHistory[index].userMessage) && (
-          <div  
-            onClick={async (e) => {await handleSendMessage(e)}}
-            className='flex flex-row items-center space-x-2 theme-bg-hover rounded px-4 py-2'
-          >
-            <RefreshIcon />
+      )}
+
+      {/* Edit Mode (Input Card) - Only show if isEditing is true */}
+      {isEditing && (
+        <div className="relative flex flex-col w-full border theme-border rounded-lg theme-bg-base focus-within:theme-border-focus transition-all shadow-sm mt-2">
+          {/* Input Area */}
+          <div className="p-1">
+            {/* @ts-ignore */}
+            <MentionsInput
+              value={userMessage || ''}
+              inputRef={inputRef}
+              onChange={handleMentionsChange}
+              className="w-full resize-none p-3 min-h-[50px] outline-none bg-transparent theme-text placeholder:theme-text-faint text-sm"
+              placeholder={index === 0 ? 'Ask anything...' : 'Ask a follow-up...'}
+              onKeyDown={async (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+                await handleSendMessage(e);
+              }}
+              suggestionsPortalHost={portalRef.current}
+              style={{
+                suggestions: {
+                  list: {
+                    backgroundColor: 'var(--background-primary)',
+                    border: '1px solid var(--background-modifier-border)',
+                    fontSize: 14,
+                  },
+                  item: {
+                    padding: '5px 15px',
+                    borderBottom: '1px solid var(--background-modifier-border)',
+                    '&focused': {
+                      backgroundColor: 'var(--background-modifier-hover)',
+                    },
+                  },
+                },
+              }}
+            >
+              <Mention
+                trigger="[["
+                // @ts-ignore
+                data={files.map((file) => ({ id: file.path, display: file.path }))}
+                onAdd={(id: string) => handleFileAdd(id)}
+              />
+            </MentionsInput>
           </div>
-        )}
-        {abortController && (
-          <button className='p-4 theme-bg-hover rounded' onClick={handleStopGenerating}>Cancel generation</button>
-        )}
-      </div>
+
+          {/* Footer: Hints & Send */}
+          <div className="flex items-center justify-between px-3 py-2 border-t theme-border border-opacity-50">
+            {/* Left: Context Files & Hints */}
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar max-w-[70%]">
+              {/* Flashcard Toggle */}
+              <div
+                className={`flex items-center gap-1 cursor-pointer px-2 py-1 rounded transition-colors text-xs select-none border ${shouldGenerateFlashcards ? 'theme-bg-accent text-white border-transparent' : 'theme-text-muted border-transparent hover:theme-bg-hover'}`}
+                onClick={() => setShouldGenerateFlashcards(!shouldGenerateFlashcards)}
+                title="Generate Flashcards from this response"
+              >
+                {shouldGenerateFlashcards ? (
+                  <span className="font-bold">✓ Cards</span>
+                ) : (
+                  <span>+ Cards</span>
+                )}
+              </div>
+
+              <div className="w-[1px] h-4 theme-bg-surface mx-1"></div>
+
+              {/* Explicit "Add Context" button if no files, or list of files */}
+              {mentionedFiles.length === 0 ? (
+                <div
+                  className="flex items-center gap-1 cursor-pointer hover:bg-gray-500/10 px-2 py-1 rounded transition-colors text-xs theme-text-muted select-none"
+                  onClick={() => {
+                    setUserMessage((userMessage || '') + ' [[')
+                    inputRef.current?.focus();
+                  }}
+                >
+                  <PlusIcon className="size-3" />
+                  <span>Context</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1">
+                  {mentionedFiles.map((file, idx) => (
+                    <ChatTag
+                      key={file.path}
+                      name={file.name}
+                      handleRemove={() => removeFile(idx)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Right: Actions */}
+            <div className="flex items-center gap-2">
+              {abortController && (
+                <button className='text-xs theme-text-error hover:text-red-600 mr-2' onClick={handleStopGenerating}>Cancel</button>
+              )}
+              <button
+                onClick={async (e) => { await handleSendMessageWrapper(e) }}
+                disabled={!userMessage}
+                className={`p-1.5 rounded-md transition-all ${userMessage ? 'theme-bg-accent text-white shadow-md hover:scale-105' : 'bg-gray-500/10 theme-text-faint cursor-not-allowed'}`}
+              >
+                <SendIcon className="size-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div
         id="suggestionPortal"
@@ -257,68 +403,6 @@ const MessageSegment: React.FC<MessageSegmentProps> = ({
         ref={portalRef}
       ></div>
 
-      {
-        mentionedFiles.length > 0 && 
-        <div className='m-4'>
-          <p className='pb-2 theme-text'>Using context:</p>
-          <div className="flex-wrap">
-            {mentionedFiles.map((file, index) => (
-              <ChatTag 
-                key={file.path} 
-                name={file.name} 
-                handleRemove={() => removeFile(index)} 
-              />
-            ))}
-          </div>
-        </div>
-      }
-
-      {(index === 0 && !aiString && (activeFile && !plugin.settings.includeCurrentFile  && !mentionedFiles.some(file => file.path === activeFile.path))) && (
-      <div className='m-4'>
-        <div className='mb-2 theme-text'> 
-          Add current file:
-        </div>
-        <div>
-          {!plugin.settings.includeCurrentFile && activeFile && !mentionedFiles.some(file => file.path === activeFile.path) && (
-            <ChatTag 
-              key={`active-${activeFile.name}`}
-              name={`+ ${activeFile.name}`}
-              handleClick={() => { handleFileAdd(activeFile.path) }} 
-            />
-          )}
-        </div>
-      </div>
-      )}
-   
-      <div className='m-4 space-y-2'>
-        {aiString && (
-          <div className='pb-4 theme-text'>
-            <Markdown>{aiString}</Markdown>
-          </div>
-        )}
-        {aiEntries?.map((entry, i) => (
-          <EntryView 
-            handleFeedback={async (feedback: 'y' | 'n') => {
-              await handleCardFeedback(feedback, entry, i);
-            }}
-            front={entry.front || ""} 
-            back={entry.back || ""} 
-            key={`entry-${i}-length-${aiEntries.length}`}
-          />
-        ))}
-        {aiEntries && aiEntries.length > 0 && (
-          <>
-            <div className='float-right'>
-              {activeFile && activeFile.path.endsWith('.md') ? (
-                  <span className="theme-text">Adding to {activeFile.name}</span>
-              ) : (
-                  <span className="theme-text">Open a file to add cards</span>
-              )}
-              <button disabled={activeFile === null} className='cursor-pointer p-4 ml-4 disabled:theme-text-faint theme-bg-hover rounded' onClick={addAllCards}>Add all cards</button>
-            </div>
-          </>
-        )}
-      </div>
     </div>
   );
 };

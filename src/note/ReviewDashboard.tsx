@@ -3,13 +3,14 @@ import { TFile } from 'obsidian';
 import SRPlugin from '@/main';
 import { NoteReviewModal } from './NoteReviewModal';
 
-interface NoteReviewQueueProps {
+interface ReviewDashboardProps {
     plugin: SRPlugin;
 }
 
-export const NoteReviewQueue: React.FC<NoteReviewQueueProps> = ({ plugin }) => {
+export const ReviewDashboard: React.FC<ReviewDashboardProps> = ({ plugin }) => {
     const [dueNotes, setDueNotes] = useState<TFile[]>([]);
     const [refreshTrigger, setRefreshTrigger] = useState(0);
+    const streak = plugin.settings.reviewStreak;
 
     const loadDueNotes = () => {
         const notes = plugin.noteScheduler.getDueNotes();
@@ -31,7 +32,15 @@ export const NoteReviewQueue: React.FC<NoteReviewQueueProps> = ({ plugin }) => {
     return (
         <div className="flex flex-col h-full overflow-hidden">
             <div className="mb-4">
-                <h2 className="text-xl font-bold theme-text mb-2">Note Review Queue</h2>
+                <div className="flex justify-between items-center mb-2">
+                    <h2 className="text-xl font-bold theme-text m-0">Review Queue</h2>
+                    {streak > 0 && (
+                        <div className="flex items-center gap-1 text-sm theme-text-accent font-semibold" title="Current Day Streak">
+                            <span>🔥</span>
+                            <span>{streak}</span>
+                        </div>
+                    )}
+                </div>
                 <p className="theme-text-faint text-sm">
                     {dueNotes.length} notes due for review.
                 </p>

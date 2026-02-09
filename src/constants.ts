@@ -76,7 +76,6 @@ export enum ViewType {
 export enum SubviewType {
   CHAT = "sr-main-chat-view",
   REVIEW = "sr-main-review-view",
-  NOTE_REVIEW = "sr-main-note-review-view",
 }
 
 export const DEFAULT_SYSTEM_PROMPT = "You are Obsidian Spaced Repetition Copilot, a helpful assistant that creates and edits spaced repetition flashcards from Obsidian notes."
@@ -94,6 +93,23 @@ Output format: JSON
     {
       "question": "The question text",
       "answer": "A concise answer or key points to look for."
+    }
+  ]
+}
+`;
+
+export const FLASHCARD_GENERATION_PROMPT = `
+You are an expert tutor used to help students learn core concepts.
+Based on the provided conversation and context, generate flashcards that help the user learn the core concepts discussed.
+Do not generate flashcards for trivial information.
+
+Output format: JSON
+{
+  "cardsSummary": "Brief summary of what these cards cover.",
+  "cards": [
+    {
+      "front": "Question/Prompt",
+      "back": "Answer/Explanation"
     }
   ]
 }
@@ -194,6 +210,14 @@ export const DEFAULT_SETTINGS: SRSettings = {
   includeCurrentFile: true,
   onboardingStatus: OnboardingStatus.Import,
   autoTrackNotes: false,
+  aiProvider: 'ollama',
+  llmBaseUrl: 'http://localhost:11434/v1',
+  llmModelName: 'smollm2:latest',
+  reviewStreak: 0,
+  lastReviewDate: '',
+  customQuizPrompt: '',
+  excludedPaths: [],
+  includedPaths: [],
 };
 
 // From here https://github.com/open-spaced-repetition/fsrs4anki/blob/main/fsrs4anki_scheduler.js#L108

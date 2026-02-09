@@ -5,10 +5,10 @@ import * as React from 'react';
 import { Root, createRoot } from 'react-dom/client';
 import Chat from "../components/Chat";
 import NavBar from '@/components/NavBar';
-import Review from '@/components/Review';
+
 import { useMessageHistory } from '../hooks/useMessageHistory';
 import { ChatMessage } from "@/chatMessage";
-import { NoteReviewQueue } from "@/note/NoteReviewQueue";
+import { ReviewDashboard } from "@/note/ReviewDashboard";
 
 export default class MainView extends ItemView {
   private root: Root | null = null;
@@ -79,17 +79,7 @@ export default class MainView extends ItemView {
               display: this.plugin.subviewType === SubviewType.REVIEW ? "block" : "none",
             }}
           >
-            <Review plugin={this.plugin} />
-          </div>
-
-          {/* NOTE REVIEW subview */}
-          <div
-            className="mt-8 mx-auto max-w-[768px]"
-            style={{
-              display: this.plugin.subviewType === SubviewType.NOTE_REVIEW ? "block" : "none",
-            }}
-          >
-            <NoteReviewQueue plugin={this.plugin} />
+            <ReviewDashboard plugin={this.plugin} />
           </div>
         </div>
       );

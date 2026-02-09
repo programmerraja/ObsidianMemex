@@ -11,6 +11,8 @@ import AIManager from './LLM/AIManager';
 import { errorMessage } from './utils/errorMessage';
 import { NoteScheduler } from './note/NoteScheduler';
 import { NoteStatus } from './note/NoteStatus';
+import { QuizManager } from './note/QuizManager';
+import { NoteReviewModal } from './note/NoteReviewModal';
 
 export default class SRPlugin extends Plugin {
 	settings: SRSettings;
@@ -20,6 +22,7 @@ export default class SRPlugin extends Plugin {
 	subviewType: SubviewType;
 	noteScheduler: NoteScheduler;
 	noteStatus: NoteStatus;
+	quizManager: QuizManager;
 
 	async onload(): Promise<void> {
 
@@ -28,7 +31,8 @@ export default class SRPlugin extends Plugin {
 		this.subviewType = SubviewType.REVIEW; // Update this to change default view
 		this.memoryManager = new MemoryManager(this.app.vault)
 		this.deckManager = new DeckManager(this.memoryManager, this.app.vault, this.settings)
-		this.noteScheduler = new NoteScheduler(this.app);
+		this.noteScheduler = new NoteScheduler(this.app, this);
+		this.quizManager = new QuizManager(this.app);
 		this.noteStatus = new NoteStatus(this, this.noteScheduler);
 
 		this.registerEvent(
@@ -45,17 +49,29 @@ export default class SRPlugin extends Plugin {
 			})
 		);
 
-		this.registerEvent(
-			this.app.vault.on('create', (file) => {
-				if (this.settings.autoTrackNotes && file instanceof TFile && file.extension === 'md') {
-					this.noteScheduler.trackNote(file);
-				}
-			})
-		);
+
+
+		// Check for due notes on startup
+		this.app.workspace.onLayoutReady(() => {
+			this.registerEvent(
+				this.app.vault.on('create', (file) => {
+					if (this.settings.autoTrackNotes && file instanceof TFile && file.extension === 'md') {
+						this.noteScheduler.trackNote(file);
+					}
+				})
+			);
+			const dueNotes = this.noteScheduler.getDueNotes();
+			if (dueNotes.length > 0) {
+				new Notice(`You have ${dueNotes.length} notes due for review today!`);
+			}
+		});
+
 
 		const key = this.settings.openAIApiKey;
 		const decryptedKey = EncryptionService.getDecryptedKey(key);
-		this.aiManager = AIManager.getInstance(this.settings.defaultModel, decryptedKey);
+		// Update settings object to have the decrypted key in memory for AIManager to use
+		const runtimeSettings = { ...this.settings, openAIApiKey: decryptedKey };
+		this.aiManager = AIManager.getInstance(runtimeSettings);
 
 		this.addSettingTab(new SRSettingTab(this.app, this));
 
@@ -90,6 +106,21 @@ export default class SRPlugin extends Plugin {
 			}
 		});
 
+		this.addCommand({
+			id: 'practice-flashcards',
+			name: 'Practice Flashcards for this Note (No Scheduling)',
+			checkCallback: (checking: boolean) => {
+				const file = this.app.workspace.getActiveFile();
+				if (file) {
+					if (!checking) {
+						new NoteReviewModal(this.app, this, file, undefined, true).open();
+					}
+					return true;
+				}
+				return false;
+			}
+		});
+
 		this.registerView(
 			ViewType.MAIN,
 			(leaf: WorkspaceLeaf) => new MainView(leaf, this),
@@ -101,7 +132,7 @@ export default class SRPlugin extends Plugin {
 		});
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SRSettingTab(this.app, this));
+		// this.addSettingTab(new SRSettingTab(this.app, this));
 
 	}
 
@@ -115,19 +146,23 @@ export default class SRPlugin extends Plugin {
 	} = {}): Promise<void> {
 		try {
 			if (changed) {
+				// Decrypt key for immediate usage update
+				const key = EncryptionService.getDecryptedKey(this.settings.openAIApiKey);
+				const runtimeSettings = { ...this.settings, openAIApiKey: key };
+				console.log(runtimeSettings, "runtimeSettings")
+
+				// Update AIManager with new settings
+				this.aiManager.updateSettings(runtimeSettings);
+
 				if (changed.apiKey) {
-					new Notice("Checking API Key...");
-					const key = EncryptionService.getDecryptedKey(this.settings.openAIApiKey);
-					const isSet = await this.aiManager.setApiKey(key);
-					if (isSet) {
-						this.settings = EncryptionService.encryptAllKeys(this.settings);
-						new Notice("API Key is valid!");
-					} else {
-						return;
-					}
-				}
-				if (changed.defaultModel) {
-					this.aiManager.setModel(this.settings.defaultModel);
+					new Notice("API Key updated for session.");
+					// Encryption happens before save in older logic, 
+					// but here we just ensure we save what is in this.settings (which should be encrypted if UI handles it)
+					// The UI sets this.settings.openAIApiKey directly. 
+					// If we utilize EncryptionService, we should ensure it encrypts before save.
+					// Assuming EncryptionService.encryptAllKeys handles this.settings in place or returns new.
+
+					this.settings = EncryptionService.encryptAllKeys(this.settings);
 				}
 			}
 			await this.saveData(this.settings);

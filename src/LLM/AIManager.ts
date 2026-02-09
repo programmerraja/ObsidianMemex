@@ -3,45 +3,16 @@ import {
   EntryItemGeneration,
   NOTE_QUIZ_PROMPT,
   NoteQuizItem,
+  FLASHCARD_GENERATION_PROMPT,
 } from "@/constants";
 import { errorMessage } from "@/utils/errorMessage";
-import { APIUserAbortError, BadRequestError } from "openai/error";
-import OpenAI from "openai";
-import { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+// @ts-ignore
+import { LLMClient } from '@unified-llm/core';
+import { SRSettings } from "@/settings";
 
-const PROMPT = `
-<INSTRUCTION>
-You are the world's best teacher. You can generate flashcards for review. Respond with the XML response format below, where chat response is your chat response alongside question answer flashcards.
-
-Best practices for flashcard generation:
-1. Focus on a Single Concept: Ensure each card addresses only one idea at a time. Eliminate extra details and break complex topics into multiple smaller cards.
-2. Use Clear and Concise Wording: Formulate direct questions or statements. Avoid run-on sentences and redundant phrasing. Clarity is more important than style.
-3. Make the Question Precise: Write questions in a way that demands a specific answer. Steer clear of vague prompts like "Discuss..." or "Explain..." in broad terms.
-4. Provide Just Enough Context: Include minimal but necessary context so the item is self-contained. Avoid forcing the learner to recall large chunks of text. Keep it short enough for quick review.
-5. Use Simple, Direct Answers: The answer should be straightforward and unambiguous. If multiple answers are possible, refine the question or break it into separate cards.
-6. Avoid Interference: Refrain from creating multiple cards that ask almost identical questions. If two concepts overlap, merge them or clarify the difference.
-7. Favor Active Recall: Design your prompt to force the learner to pull the answer from memory, not guess from context alone. For example, instead of "Fill in the blank," try a direct question: "What is the capital of France?"
-8. Personalize When Possible: Tie the prompt to relevant experiences or mnemonics. Personalized elements enhance retention.
-9. Keep Items Standalone: Don't rely on external resources during recall. Cards should function independently of each other or outside references.
-10. Check for Relevance: Make sure the item is genuinely worth memorizing. Ask: "Will I need to recall this later?" or "Is this fundamental to my understanding?"
-
-Best practices for using reference files and chat response
-1. Avoid making flashcards about existing flashcards in the file. You can identify them by an embedded flashcard id, like: "What is capital of France? [[SR/memory/r3HHdEhi.md|>>]] Paris"
-2. If flashcards are generated, your chat response should be coherent and reference the flashcards too!
-3. Make sure flashcards are generated if the user is trying to learn something. 
-3. Follow best practices for flashcard generation! :)
-
-</INSTRUCTION>
-<RESPONSE FORMAT>
-<chat response>
-Chat response is here
-</chat response>
-<flashcards>
-  <flashcard>
-  <question>Question is here</question><answer>Answer is here</answer>
-  </flashcard>
-</flashcards>
-</RESPONSE FORMAT>
+const PROMPT = `You are a helpful AI assistant integrated into Obsidian.
+You can help the user with their notes, answer questions, and explain concepts.
+Use Markdown formatting for your responses.
 `;
 
 type Message = {
@@ -49,198 +20,182 @@ type Message = {
   content: string;
 };
 
-
 export default class AIManager {
   private static instance: AIManager;
-  private client: OpenAI;
+  private client: any; // LLMClient
   private messageHistory: Message[];
   public chatModel: ChatModels;
+  private customQuizPrompt: string; // Store custom prompt
 
-  constructor(chatModel: ChatModels, apiKey: string) {
-    this.chatModel = chatModel;
+  constructor(settings: SRSettings) {
+    this.chatModel = settings.defaultModel;
+    this.customQuizPrompt = settings.customQuizPrompt;
     this.messageHistory = [];
     this.setNewThread();
-    this.checkApiKey(apiKey)
-      .then((valid) => {
-        if (valid) {
-          this.client = new OpenAI({
-            apiKey,
-            dangerouslyAllowBrowser: true
-          });
-        }
-      });
+    this.initClient(settings);
   }
 
-  // Gets singleton instance
-  static getInstance(chatModel: ChatModels, apiKey: string): AIManager {
+  static getInstance(settings: SRSettings): AIManager {
     if (!AIManager.instance) {
-      AIManager.instance = new AIManager(chatModel, apiKey);
+      AIManager.instance = new AIManager(settings);
     }
     return AIManager.instance;
   }
 
-  async checkApiKey(apiKey: string): Promise<boolean> {
-    const tempClient = new OpenAI({
-      apiKey,
-      dangerouslyAllowBrowser: true
-    });
-    const response = await tempClient.chat.completions.create({
-      messages: [{ role: 'user', content: 'this is a test' }],
-      model: this.chatModel,
-    });
-    return !!response.choices[0].message.content;
+  // Allow re-initializing with new settings
+  public updateSettings(settings: SRSettings) {
+    this.chatModel = settings.defaultModel;
+    this.customQuizPrompt = settings.customQuizPrompt;
+    this.initClient(settings);
   }
 
-  async setApiKey(apiKey: string): Promise<boolean> {
-    const valid = await this.checkApiKey(apiKey);
-    if (valid) {
-      this.client = new OpenAI({
-        apiKey,
-        dangerouslyAllowBrowser: true
-      });
-      return true;
+  private initClient(settings: SRSettings) {
+    const config: any = {
+      provider: settings.aiProvider,
+      model: settings.llmModelName || settings.defaultModel,
+      apiKey: settings.openAIApiKey
+    };
+
+    if (settings.llmBaseUrl) {
+      config.baseURL = settings.llmBaseUrl;
     }
-    return false;
+
+    try {
+      this.client = new LLMClient(config);
+    } catch (e) {
+      console.error("Failed to initialize LLM Client:", e);
+    }
   }
 
-  // Sets the chat model
   setModel(newModel: ChatModels): void {
     this.chatModel = newModel;
   }
 
-  // Sets a new conversation thread with optional index to slice message history
   async setNewThread(index?: number): Promise<void> {
     if (index) {
       const historyToUse = index !== undefined ? this.messageHistory.slice(0, index * 2 + 1) : [];
-      this.messageHistory = [
-        ...historyToUse
-      ];
+      this.messageHistory = [...historyToUse];
     } else {
-      this.messageHistory = [{ role: 'developer', content: PROMPT }];
+      // 'developer' role might not be supported by all providers, using 'system' safe bet
+      this.messageHistory = [{ role: 'developer' as any, content: PROMPT }];
     }
   }
 
-  private parseFlashcards(xmlString: string): { chatResponse: string; entries: EntryItemGeneration[] } {
-    let chatResponse = '';
-    const entries: EntryItemGeneration[] = [];
-
-    // Extract chat response - handle both complete and partial tags
-    const chatMatch = xmlString.match(/<chat response>([^]*?)(?:<\/chat response>|$)/);
-    if (chatMatch) {
-      chatResponse = chatMatch[1].trim();
-    }
-
-    // Extract flashcards - only complete flashcard tags
-    const flashcardMatches = xmlString.matchAll(/<flashcard>[^]*?<question>([^]*?)<\/question>[^]*?<answer>([^]*?)<\/answer>[^]*?<\/flashcard>/g);
-    for (const match of flashcardMatches) {
-      entries.push({
-        front: match[1].trim(),
-        back: match[2].trim()
-      });
-    }
-
-    return { chatResponse, entries };
-  }
-
-  async streamAIResponse(
+  async streamChat(
     newMessageModded: string,
     abortController: AbortController,
-    setAIString: (response: string) => void,
-    setAIEntries: (response: EntryItemGeneration[]) => void
-  ): Promise<{ str: string; entries: EntryItemGeneration[] }> {
+    setAIString: (response: string) => void
+  ): Promise<string> {
+    if (!this.client) return '';
 
     try {
-      // Push user message into messageHistory
-      this.messageHistory.push({ role: 'user' as const, content: newMessageModded });
-      const stream = await this.client.chat.completions.create({
-        model: this.chatModel,
-        messages: this.messageHistory as ChatCompletionMessageParam[],
-        stream: true,
+      this.messageHistory.push({ role: 'user', content: newMessageModded });
+
+      // Map internal history to LLMClient format
+      const messages = this.messageHistory.map((m, idx) => ({
+        role: m.role === 'developer' ? 'system' : m.role,
+        content: m.content,
+        id: idx.toString(),
+        createdAt: new Date()
+      }));
+
+      const stream = await this.client.stream({
+        messages: messages,
       });
 
       let fullResponse = '';
-      let lastChatResponse = '';
-      let lastEntries: EntryItemGeneration[] = [];
 
-      for await (const chunk of stream) {
+      for await (const ev of stream) {
         if (abortController.signal.aborted) {
           break;
         }
 
-        const content = chunk.choices[0]?.delta?.content || '';
-        fullResponse += content;
+        // Debugging: handle various stream formats
+        let chunkContent = '';
 
-        const { chatResponse, entries } = this.parseFlashcards(fullResponse);
-
-        // Only update if we have new content
-        if (chatResponse && chatResponse !== lastChatResponse) {
-          setAIString(chatResponse);
-          lastChatResponse = chatResponse;
+        // 1. Unified LLM / Generic Event Type
+        if (ev.eventType === 'text_delta' || ev.eventType === 'text_snapshot') {
+          if (ev.text && ev.text.length > fullResponse.length) {
+            fullResponse = ev.text; // Snapshot
+            setAIString(fullResponse);
+            continue;
+          } else if (ev.delta?.text) {
+            chunkContent = ev.delta.text;
+          }
+        }
+        // 2. Raw OpenAI Style (choices[0].delta.content)
+        else if (ev.choices && ev.choices[0]?.delta?.content) {
+          chunkContent = ev.choices[0].delta.content;
+        }
+        // 3. Raw Anthropic / Simple Content Style
+        else if (ev.content) {
+          chunkContent = ev.content;
+        }
+        // 4. Fallback for 'text' property directly on event
+        else if (ev.text && typeof ev.text === 'string') {
+          // Some adapters might just emit { text: "partial" }
+          chunkContent = ev.text;
         }
 
-        if (entries.length > lastEntries.length) {
-          setAIEntries(entries);
-          lastEntries = entries;
+        if (chunkContent) {
+          fullResponse += chunkContent;
+          setAIString(fullResponse);
         }
       }
 
-      const finalParse = this.parseFlashcards(fullResponse);
-
-      // Push assistant message response into messageHistory
       this.messageHistory.push({
         role: 'assistant',
         content: fullResponse
       });
 
-      return { str: finalParse.chatResponse, entries: finalParse.entries };
+      return fullResponse;
 
     } catch (e) {
       console.error('Error in AI stream:', e);
-      if (!(e instanceof APIUserAbortError)) {
-        if (e instanceof BadRequestError) {
-          const message = e.message;
-          // Check for token limit error
-          const tokenMatch = message.match(/maximum context length is (\d+).*resulted in (\d+) tokens/);
-          if (tokenMatch) {
-            const [, maxTokens, actualTokens] = tokenMatch;
-            setAIString(`Oops! Your message is ${actualTokens} tokens. Please keep it under ${maxTokens} tokens (about ${Math.round(Number(maxTokens) * 0.75)} words).`);
-            return { str: '', entries: [] };
-          }
-
-          // Check for string length error
-          const lengthMatch = message.match(/maximum length (\d+).*length (\d+)/);
-          if (lengthMatch) {
-            const [, maxLength, actualLength] = lengthMatch;
-            // Rough estimation: 1 token ≈ 4 characters
-            const estimatedTokens = Math.ceil(Number(actualLength) / 4);
-            const maxTokens = Math.ceil(Number(maxLength) / 4);
-            setAIString(`Oops! Your message is too long (approximately ${estimatedTokens} tokens). Please keep it under ${maxTokens} tokens (about ${Math.round(maxTokens * 0.75)} words).`);
-            return { str: '', entries: [] };
-          }
-
-        } else {
-          errorMessage(`Streaming AI response ${e}`);
-        }
-      }
-      return { str: '', entries: [] };
+      errorMessage(`Streaming AI response ${e}`);
+      return '';
     }
   }
+
+  async generateFlashcards(context: string): Promise<EntryItemGeneration[]> {
+    if (!this.client) return [];
+
+    try {
+      const messages = [
+        { role: 'system', content: FLASHCARD_GENERATION_PROMPT },
+        { role: 'user', content: `Context:\n${context}` }
+      ];
+
+      const response = await this.client.chat({
+        messages: messages
+        // mode: 'json' // If supported by provider, else prompt engineering handles it
+      });
+
+      let jsonString = response.message?.content[0].text || "{}";
+      jsonString = jsonString.replace(/^```json\n/, '').replace(/\n```$/, ''); // Cleanup markdown code blocks
+
+      const parsed = JSON.parse(jsonString);
+      return parsed.cards || [];
+
+    } catch (e) {
+      console.error("Flashcard generation failed", e);
+      errorMessage("Failed to generate flashcards: " + e);
+      return [];
+    }
+  }
+
   async generateNoteQuiz(content: string): Promise<NoteQuizItem[]> {
     if (!this.client) return [];
 
     try {
-      const response = await this.client.chat.completions.create({
-        model: this.chatModel,
+      const response = await this.client.chat({
         messages: [
-          { role: 'system', content: NOTE_QUIZ_PROMPT },
+          { role: 'system', content: this.customQuizPrompt || NOTE_QUIZ_PROMPT },
           { role: 'user', content: `Note content:\n\n${content}` }
-        ],
-        // response_format: { type: "json_object" } // Optional depending on model
+        ]
       });
 
-      let jsonString = response.choices[0].message.content || "{}";
-
-      // Basic cleanup for markdown code blocks
+      let jsonString = response.message?.content[0].text || "{}";
       jsonString = jsonString.replace(/^```json\n/, '').replace(/\n```$/, '');
 
       const parsed = JSON.parse(jsonString);

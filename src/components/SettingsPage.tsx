@@ -36,33 +36,7 @@ export class SRSettingTab extends PluginSettingTab {
         })
       );
 
-    new Setting(containerEl)
-      .setName('OpenAI API key')
-      .setDesc(`Add an API key to chat with your notes and generate flashcards. Note that you can still do flashcard reviews without AI`)
-      .addText(text => text
-        .setPlaceholder('Enter your secret')
-        .setValue(this.plugin.settings.openAIApiKey ? '•'.repeat(16) : '')
-        .onChange((value) => {
-          this.plugin.settings.openAIApiKey = value;
-        }))
-      .addButton(cb => cb
-        .setButtonText('Validate')
-        .onClick(() => {
-          this.plugin.saveSettings({ apiKey: true });
-        })
-      )
 
-    new Setting(containerEl)
-      .setName('Default model')
-      .setDesc(`When you open a new chat, this AI model is used by default`)
-      .addDropdown(dropdown => dropdown
-        .addOptions(MODEL_TO_DISPLAY_NAME)
-        .setValue(this.plugin.settings.defaultModel)
-        .onChange(async (value: ChatModels) => {
-          this.plugin.settings.defaultModel = value;
-          this.plugin.settings.defaultModelDisplayName = MODEL_TO_DISPLAY_NAME[value];
-          await this.plugin.saveSettings({ defaultModel: true });
-        }));
 
     new Setting(containerEl)
       .setName('Include current file by default')
@@ -82,6 +56,95 @@ export class SRSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.autoTrackNotes)
         .onChange(async (value) => {
           this.plugin.settings.autoTrackNotes = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName('Excluded Paths')
+      .setDesc('Paths or folders to ignore (one per line).')
+      .addTextArea(text => text
+        .setValue(this.plugin.settings.excludedPaths.join('\n'))
+        .setPlaceholder('Templates/\nArchive/\nSecret.md')
+        .onChange(async (value) => {
+          this.plugin.settings.excludedPaths = value.split('\n').map(p => p.trim()).filter(p => p.length > 0);
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName('Included Paths (Whitelist)')
+      .setDesc('Only track notes in these paths. Leave empty to track all (except excluded).')
+      .addTextArea(text => text
+        .setValue(this.plugin.settings.includedPaths.join('\n'))
+        .setPlaceholder('School/Biology/\nImportant/')
+        .onChange(async (value) => {
+          this.plugin.settings.includedPaths = value.split('\n').map(p => p.trim()).filter(p => p.length > 0);
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName('AI Provider')
+      .setDesc('Select which AI provider to use.')
+      .addDropdown(dropdown => dropdown
+        .addOption('openai', 'OpenAI')
+        .addOption('anthropic', 'Anthropic')
+        .addOption('gemini', 'Google Gemini')
+        .addOption('ollama', 'Ollama (Local)')
+        .addOption('custom', 'Custom OpenAI-Compatible')
+        .setValue(this.plugin.settings.aiProvider)
+        .onChange(async (value: any) => {
+          this.plugin.settings.aiProvider = value;
+          await this.plugin.saveSettings();
+          this.display(); // Refresh to show/hide relevant fields
+        })
+      );
+
+    new Setting(containerEl)
+      .setName('API Key')
+      .setDesc('API Key for the selected provider.')
+      .addText(text => text
+        .setPlaceholder('sk-...')
+        .setValue(this.plugin.settings.openAIApiKey ? '•'.repeat(16) : '')
+        .onChange(async (value) => {
+          this.plugin.settings.openAIApiKey = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName('Model Name')
+      .setDesc('e.g., gpt-4o, claude-3-5-sonnet-20240620, llama3')
+      .addText(text => text
+        .setValue(this.plugin.settings.llmModelName)
+        .onChange(async (value) => {
+          this.plugin.settings.llmModelName = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    if (this.plugin.settings.aiProvider === 'custom' || this.plugin.settings.aiProvider === 'ollama') {
+      new Setting(containerEl)
+        .setName('Base URL')
+        .setDesc('Endpoint URL (e.g., http://localhost:11434/v1)')
+        .addText(text => text
+          .setValue(this.plugin.settings.llmBaseUrl)
+          .onChange(async (value) => {
+            this.plugin.settings.llmBaseUrl = value;
+            await this.plugin.saveSettings();
+          })
+        );
+    }
+
+    new Setting(containerEl)
+      .setName('Custom Quiz Prompt')
+      .setDesc('Override the system prompt used to generate quizzes.')
+      .addTextArea(text => text
+        .setValue(this.plugin.settings.customQuizPrompt)
+        .setPlaceholder('You are a strict teacher...')
+        .onChange(async (value) => {
+          this.plugin.settings.customQuizPrompt = value;
           await this.plugin.saveSettings();
         })
       );
