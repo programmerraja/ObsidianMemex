@@ -11,3 +11,8 @@ V2
 - For each file on status bar or some where click we need a new feature to show the deck of flash cards where user can practice or reviwse when ever he want. we need to come up with idea idea to generate deck of flash card for notes and storeing and allow user to revise
 - need setting to where user can config file to skip or folder to skip tracking and option to disable tracking for a file
 -
+
+v3
+
+- currently we generating question on practice flashcard or on review but in that where user can regenerate if they not satified and give prompt that we need to add that to our existing prompt and send
+- need notification on review

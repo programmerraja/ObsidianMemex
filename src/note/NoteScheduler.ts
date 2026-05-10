@@ -1,18 +1,20 @@
-import { TFile, App, Notice } from 'obsidian';
+import { TFile, App, Notice, getAllTags } from 'obsidian';
 import { FSRS, Card, Rating, State, createEmptyCard, Entry, EntryType, Grade } from '@/fsrs';
 import { DEFAULT_FSRS_WEIGHTS } from '@/constants';
 import SRPlugin from '@/main';
+import moment from 'moment';
 
 interface NoteReviewData {
     due: string;
     interval: number;
     difficulty: number;
     state: string;
+    ease?: number;
 }
 
 export class NoteScheduler {
     app: App;
-    plugin: SRPlugin; // Need plugin to access settings
+    plugin: SRPlugin;
     fsrs: FSRS;
 
     constructor(app: App, plugin: SRPlugin) {
@@ -39,18 +41,58 @@ export class NoteScheduler {
 
     private isIgnored(file: TFile): boolean {
         const excludedPaths = this.plugin.settings.excludedPaths;
-        // Check folder/file path exclusion
         if (excludedPaths.some(p => file.path.startsWith(p))) {
             return true;
         }
 
-        // Check frontmatter exclusion
         const cache = this.app.metadataCache.getFileCache(file);
         if (cache?.frontmatter?.['sr-ignore'] === true) {
             return true;
         }
 
         return false;
+    }
+
+    private hasReviewTag(file: TFile): boolean {
+        const cache = this.app.metadataCache.getFileCache(file);
+        if (!cache) return false;
+
+        const tags = getAllTags(cache) || [];
+        const reviewTags = this.plugin.settings.reviewTags;
+
+        return tags.some(tag => reviewTags.includes(tag) || reviewTags.some(rt => tag.startsWith(rt + '/')));
+    }
+
+    getNewNotes(): TFile[] {
+        const allFiles = this.app.vault.getMarkdownFiles();
+        return allFiles.filter(file => {
+            if (this.isIgnored(file)) return false;
+            if (this.isTracked(file)) return false;
+            return this.hasReviewTag(file);
+        });
+    }
+
+    getScheduledNotes(): TFile[] {
+        const allFiles = this.app.vault.getMarkdownFiles();
+        return allFiles.filter(file => {
+            if (this.isIgnored(file)) return false;
+            return this.isTracked(file); // No tag required if already tracked
+        });
+    }
+
+    getDueNotes(): TFile[] {
+        const today = moment().startOf('day');
+        const scheduled = this.getScheduledNotes();
+
+        return scheduled.filter(file => {
+            const cache = this.app.metadataCache.getFileCache(file);
+            const dueStr = cache?.frontmatter?.['sr-due'];
+            if (!dueStr) return false;
+
+            // Try to parse with common formats to be robust
+            const due = moment(dueStr, ['YYYY-MM-DD', 'DD/MM/YYYY', 'DD-MM-YYYY', 'YYYY/MM/DD'], true);
+            return due.isValid() && due.isSameOrBefore(today, 'day');
+        });
     }
 
     async trackNote(file: TFile): Promise<void> {
@@ -64,18 +106,28 @@ export class NoteScheduler {
             return;
         }
 
-        const now = new Date();
-        const entry = this.getDummyEntry(file);
-        const card = createEmptyCard(entry, now);
+        const algorithm = this.plugin.settings.schedulingAlgorithm;
+        if (algorithm === 'fsrs') {
+            const now = new Date();
+            const entry = this.getDummyEntry(file);
+            const card = createEmptyCard(entry, now);
 
-        // Schedule first review for TOMORROW
-        const tomorrow = new Date();
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        card.due = tomorrow;
-        card.scheduled_days = 1;
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            card.due = tomorrow;
+            card.scheduled_days = 1;
 
-        await this.saveCardToNote(file, card);
-        new Notice(`Tracking enabled for ${file.basename}. First review due: ${card.due.toISOString().split('T')[0]}`);
+            await this.saveCardToNote(file, card);
+        } else {
+            // SM-2 Initial State
+            await this.app.fileManager.processFrontMatter(file, (fm) => {
+                fm['sr-due'] = moment().format('YYYY-MM-DD');
+                fm['sr-interval'] = 0;
+                fm['sr-ease'] = 250;
+            });
+        }
+
+        new Notice(`Tracking enabled for ${file.basename}.`);
     }
 
     getReviewData(file: TFile): NoteReviewData | null {
@@ -87,63 +139,105 @@ export class NoteScheduler {
             due: f['sr-due'],
             interval: f['sr-interval'] || 0,
             difficulty: f['sr-difficulty'] || 0,
-            state: f['sr-state'] !== undefined ? State[f['sr-state']] : 'Unknown'
+            state: f['sr-state'] !== undefined ? State[f['sr-state']] : 'Unknown',
+            ease: f['sr-ease']
         };
     }
 
-    getDueNotes(): TFile[] {
-        const today = new Date().toISOString().split('T')[0];
-        const allFiles = this.app.vault.getMarkdownFiles();
+    async reviewNote(file: TFile, grade: number): Promise<void> {
+        const algorithm = this.plugin.settings.schedulingAlgorithm;
 
-        return allFiles.filter(file => {
-            if (this.isIgnored(file)) return false;
+        if (algorithm === 'fsrs') {
+            await this.reviewNoteFSRS(file, grade);
+        } else {
+            await this.reviewNoteSM2(file, grade);
+        }
 
-            const cache = this.app.metadataCache.getFileCache(file);
-            const due = cache?.frontmatter?.['sr-due'];
-            return due && due <= today;
-        });
+        // Grant XP for gamification
+        const xpMap: Record<number, number> = { 3: 15, 2: 10, 1: 5 };
+        const xpGained = xpMap[grade] || 0;
+        this.plugin.settings.totalXP += xpGained;
+        
+        await this.updateStreak();
+
+        if (this.plugin.settings.autoNext) {
+            this.openNextDueNote();
+        } else {
+            new Notice(`Gained ${xpGained} XP! Total: ${this.plugin.settings.totalXP} XP`);
+        }
     }
 
-    async reviewNote(file: TFile, grade: number): Promise<void> {
-        // Grade: 1=Again, 2=Hard, 3=Good, 4=Easy
+    private async reviewNoteFSRS(file: TFile, grade: number): Promise<void> {
         const rating = grade as Grade;
-
         const card = this.loadCardFromNote(file);
-        if (!card) {
-            console.error("Cannot review untracked note");
-            return;
-        }
+        if (!card) return;
 
         const now = new Date();
         const schedulingCards = this.fsrs.repeat(card, now);
-
-        const recordLog = schedulingCards[rating];
-        const newCard = recordLog.card;
+        const newCard = schedulingCards[rating].card;
 
         await this.saveCardToNote(file, newCard);
+        new Notice(`Reviewed (FSRS): Next due in ${newCard.scheduled_days} days`);
+    }
 
-        // Update Streak
-        await this.updateStreak();
+    private async reviewNoteSM2(file: TFile, grade: number): Promise<void> {
+        // Grade: 1=Hard, 2=Good, 3=Easy
+        await this.app.fileManager.processFrontMatter(file, (fm) => {
+            let ease = fm['sr-ease'] || 250;
+            let interval = fm['sr-interval'] || 0;
 
-        new Notice(`Reviewed: Next due in ${newCard.scheduled_days} days`);
+            if (grade === 3) { // Easy
+                ease += 20;
+                interval = interval === 0 ? 4 : Math.ceil(interval * 3);
+            } else if (grade === 2) { // Good
+                // Ease stays stable
+                interval = interval === 0 ? 1 : Math.ceil(interval * 2);
+            } else { // Hard
+                ease = Math.max(130, ease - 20);
+                interval = 1; // Reset to 1 day
+            }
+
+            fm['sr-ease'] = ease;
+            fm['sr-interval'] = interval;
+            fm['sr-due'] = moment().add(interval, 'days').format('YYYY-MM-DD');
+        });
+
+        const cache = this.app.metadataCache.getFileCache(file);
+        const newDue = cache?.frontmatter?.['sr-due'];
+        new Notice(`Reviewed (SM-2): Next due on ${newDue}`);
+    }
+
+    private openNextDueNote() {
+        const dueNotes = this.getDueNotes();
+        const newNotes = this.getNewNotes();
+
+        let nextFile: TFile | undefined;
+
+        if (dueNotes.length > 0) {
+            nextFile = dueNotes[0];
+        } else if (newNotes.length > 0) {
+            nextFile = newNotes[0];
+        }
+
+        if (nextFile) {
+            this.app.workspace.getLeaf(false).openFile(nextFile);
+        } else {
+            new Notice("No more notes due for review! All caught up. 🎉");
+        }
     }
 
     private async updateStreak(): Promise<void> {
-        const today = new Date().toISOString().split('T')[0];
+        const today = moment().format('YYYY-MM-DD');
         const lastReview = this.plugin.settings.lastReviewDate;
 
-        if (lastReview === today) {
-            return; // Already reviewed today
-        }
+        if (lastReview === today) return;
 
-        const yesterday = new Date();
-        yesterday.setDate(yesterday.getDate() - 1);
-        const yesterdayString = yesterday.toISOString().split('T')[0];
+        const yesterday = moment().subtract(1, 'days').format('YYYY-MM-DD');
 
-        if (lastReview === yesterdayString) {
+        if (lastReview === yesterday) {
             this.plugin.settings.reviewStreak += 1;
         } else {
-            this.plugin.settings.reviewStreak = 1; // Reset or start new
+            this.plugin.settings.reviewStreak = 1;
         }
 
         this.plugin.settings.lastReviewDate = today;
@@ -156,8 +250,6 @@ export class NoteScheduler {
         if (!f?.['sr-due']) return null;
 
         const entry = this.getDummyEntry(file);
-
-        // Handle due date parsing (string to Date)
         const dueDate = new Date(f['sr-due']);
 
         return {
@@ -185,8 +277,6 @@ export class NoteScheduler {
             frontmatter['sr-reps'] = card.reps;
             frontmatter['sr-lapses'] = card.lapses;
             frontmatter['sr-last-review'] = card.last_review ? card.last_review.toISOString() : '';
-
-            // For UI display / compat
             frontmatter['sr-interval'] = card.scheduled_days;
         });
     }

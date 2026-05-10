@@ -13,6 +13,7 @@ import { NoteScheduler } from './note/NoteScheduler';
 import { NoteStatus } from './note/NoteStatus';
 import { QuizManager } from './note/QuizManager';
 import { NoteReviewModal } from './note/NoteReviewModal';
+import { ReviewStatusBar } from './note/ReviewStatusBar';
 
 export default class SRPlugin extends Plugin {
 	settings: SRSettings;
@@ -23,6 +24,7 @@ export default class SRPlugin extends Plugin {
 	noteScheduler: NoteScheduler;
 	noteStatus: NoteStatus;
 	quizManager: QuizManager;
+	reviewStatusBar: ReviewStatusBar;
 
 	async onload(): Promise<void> {
 
@@ -34,10 +36,22 @@ export default class SRPlugin extends Plugin {
 		this.noteScheduler = new NoteScheduler(this.app, this);
 		this.quizManager = new QuizManager(this.app);
 		this.noteStatus = new NoteStatus(this, this.noteScheduler);
+		this.reviewStatusBar = new ReviewStatusBar(this.addStatusBarItem(), this);
 
 		this.registerEvent(
 			this.app.workspace.on('file-open', (file) => {
-				this.noteStatus.update(file);
+				if (!file) return;
+				
+				if (file === this.app.workspace.getActiveFile()) {
+					this.noteStatus.update(file);
+				}
+				this.reviewStatusBar.update();
+
+				// Proactive Gamification/Notification
+				const dueNotes = this.noteScheduler.getDueNotes();
+				if (dueNotes.includes(file as TFile)) {
+					new Notice(`📚 This note is due for review! Level up by completing it.`);
+				}
 			})
 		);
 
@@ -46,6 +60,7 @@ export default class SRPlugin extends Plugin {
 				if (file === this.app.workspace.getActiveFile()) {
 					this.noteStatus.update(file);
 				}
+				this.reviewStatusBar.update();
 			})
 		);
 
@@ -61,6 +76,7 @@ export default class SRPlugin extends Plugin {
 				})
 			);
 			const dueNotes = this.noteScheduler.getDueNotes();
+			this.reviewStatusBar.update();
 			if (dueNotes.length > 0) {
 				new Notice(`You have ${dueNotes.length} notes due for review today!`);
 			}
@@ -85,7 +101,7 @@ export default class SRPlugin extends Plugin {
 
 		this.addCommand({
 			id: "review-toggle-window",
-			name: "Review your flashcards",
+			name: "Open Review Queue",
 			callback: () => {
 				this.toggleView(ViewType.MAIN, SubviewType.REVIEW);
 			}
@@ -131,6 +147,116 @@ export default class SRPlugin extends Plugin {
 			this.toggleView(ViewType.MAIN, this.subviewType);
 		});
 
+		// Review Commands
+		this.addCommand({
+			id: 'review-easy',
+			name: 'Review: Easy',
+			checkCallback: (checking: boolean) => {
+				const file = this.app.workspace.getActiveFile();
+				if (file && (this.noteScheduler.isTracked(file) || this.noteScheduler.getNewNotes().includes(file))) {
+					if (!checking) {
+						this.noteScheduler.reviewNote(file, 3);
+					}
+					return true;
+				}
+				return false;
+			}
+		});
+
+		this.addCommand({
+			id: 'review-good',
+			name: 'Review: Good',
+			checkCallback: (checking: boolean) => {
+				const file = this.app.workspace.getActiveFile();
+				if (file && (this.noteScheduler.isTracked(file) || this.noteScheduler.getNewNotes().includes(file))) {
+					if (!checking) {
+						this.noteScheduler.reviewNote(file, 2);
+					}
+					return true;
+				}
+				return false;
+			}
+		});
+
+		this.addCommand({
+			id: 'review-hard',
+			name: 'Review: Hard',
+			checkCallback: (checking: boolean) => {
+				const file = this.app.workspace.getActiveFile();
+				if (file && (this.noteScheduler.isTracked(file) || this.noteScheduler.getNewNotes().includes(file))) {
+					if (!checking) {
+						this.noteScheduler.reviewNote(file, 1);
+					}
+					return true;
+				}
+				return false;
+			}
+		});
+
+		// Context Menu Integration
+		this.registerEvent(
+			this.app.workspace.on('file-menu', (menu, file) => {
+				if (file instanceof TFile && file.extension === 'md') {
+					menu.addItem((item) => {
+						item
+							.setTitle('Review: Easy')
+							.setIcon('lucide-check-circle')
+							.onClick(async () => {
+								await this.noteScheduler.reviewNote(file, 3);
+							});
+					});
+					menu.addItem((item) => {
+						item
+							.setTitle('Review: Good')
+							.setIcon('lucide-check')
+							.onClick(async () => {
+								await this.noteScheduler.reviewNote(file, 2);
+							});
+					});
+					menu.addItem((item) => {
+						item
+							.setTitle('Review: Hard')
+							.setIcon('lucide-x-circle')
+							.onClick(async () => {
+								await this.noteScheduler.reviewNote(file, 1);
+							});
+					});
+				}
+			})
+		);
+
+		this.registerEvent(
+			this.app.workspace.on('editor-menu', (menu, editor, view) => {
+				const file = view.file;
+				if (file instanceof TFile && file.extension === 'md') {
+					menu.addItem((item) => {
+						item
+							.setTitle('Review: Easy')
+							.setIcon('lucide-check-circle')
+							.onClick(async () => {
+								await this.noteScheduler.reviewNote(file, 3);
+							});
+					});
+					menu.addItem((item) => {
+						item
+							.setTitle('Review: Good')
+							.setIcon('lucide-check')
+							.onClick(async () => {
+								await this.noteScheduler.reviewNote(file, 2);
+							});
+					});
+					menu.addItem((item) => {
+						item
+							.setTitle('Review: Hard')
+							.setIcon('lucide-x-circle')
+							.onClick(async () => {
+								await this.noteScheduler.reviewNote(file, 1);
+							});
+					});
+				}
+			})
+		);
+
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		// this.addSettingTab(new SRSettingTab(this.app, this));
 
@@ -172,31 +298,25 @@ export default class SRPlugin extends Plugin {
 	}
 
 	toggleView(viewType: ViewType, subviewType: SubviewType) {
-		const leaves = this.app.workspace.getLeavesOfType(viewType);
-		if (leaves.length > 0) {
-			if (this.subviewType !== subviewType) {
-				this.subviewType = subviewType;
-				this.activateView(viewType);
-			}
-		} else {
-			this.subviewType = subviewType;
-			this.activateView(viewType);
-		}
+		console.log(`Toggling view: ${viewType} with subview: ${subviewType}`);
+		this.subviewType = subviewType;
+		this.activateView(viewType);
 	}
 
 	async activateView(viewType: ViewType) {
-		const leaves = this.app.workspace.getLeavesOfType(viewType);
-		if (leaves.length === 0) {
-			await this.app.workspace
-				.getLeaf(false)
-				.setViewState({
-					type: viewType,
-					active: true,
-				});
-			this.app.workspace.revealLeaf(
-				this.app.workspace.getLeavesOfType(viewType)[0],
-			);
+		console.log(`Activating view: ${viewType}`);
+		let leaf = this.app.workspace.getLeavesOfType(viewType)[0];
+
+		if (!leaf) {
+			console.log(`Leaf not found, creating new one for ${viewType}`);
+			leaf = this.app.workspace.getLeaf('tab' as any); // Try to open in a tab or a sensible default
+			await leaf.setViewState({
+				type: viewType,
+				active: true,
+			});
 		}
+
+		this.app.workspace.revealLeaf(leaf);
 	}
 
 	async deactivateView(viewType: ViewType) {

@@ -60,6 +60,44 @@ export class SRSettingTab extends PluginSettingTab {
         })
       );
 
+    containerEl.createEl('h3', { text: 'Note Review' });
+
+    new Setting(containerEl)
+      .setName('Review Tags')
+      .setDesc('Tags that trigger note review (one per line, e.g. #review). Supports nested tags like #review/coding.')
+      .addTextArea(text => text
+        .setValue(this.plugin.settings.reviewTags.join('\n'))
+        .setPlaceholder('#review')
+        .onChange(async (value) => {
+          this.plugin.settings.reviewTags = value.split('\n').map(p => p.trim()).filter(p => p.length > 0);
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName('Scheduling Algorithm')
+      .setDesc('SM-2 is recommended for simple note reviews. FSRS is more advanced.')
+      .addDropdown(dropdown => dropdown
+        .addOption('sm2', 'SM-2 (Simplified)')
+        .addOption('fsrs', 'FSRS (Modern)')
+        .setValue(this.plugin.settings.schedulingAlgorithm)
+        .onChange(async (value: 'sm2' | 'fsrs') => {
+          this.plugin.settings.schedulingAlgorithm = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName('Auto-Next Note')
+      .setDesc('Automatically open the next due note after reviewing the current one.')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.autoNext)
+        .onChange(async (value) => {
+          this.plugin.settings.autoNext = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
     new Setting(containerEl)
       .setName('Excluded Paths')
       .setDesc('Paths or folders to ignore (one per line).')
@@ -90,7 +128,7 @@ export class SRSettingTab extends PluginSettingTab {
       .addDropdown(dropdown => dropdown
         .addOption('openai', 'OpenAI')
         .addOption('anthropic', 'Anthropic')
-        .addOption('gemini', 'Google Gemini')
+        .addOption('google', 'Google Gemini')
         .addOption('ollama', 'Ollama (Local)')
         .addOption('custom', 'Custom OpenAI-Compatible')
         .setValue(this.plugin.settings.aiProvider)

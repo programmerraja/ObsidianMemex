@@ -191,7 +191,7 @@ export default class AIManager {
       const response = await this.client.chat({
         messages: [
           { role: 'system', content: this.customQuizPrompt || NOTE_QUIZ_PROMPT },
-          { role: 'user', content: `Note content:\n\n${content}` }
+          { role: 'user', content: `Generate questions for this note:\n<NOTE>\n${content}\n</NOTE>\n\nRespond with ONLY the JSON object\n` }
         ]
       });
 

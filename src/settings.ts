@@ -17,4 +17,8 @@ export interface SRSettings {
   customQuizPrompt: string;
   excludedPaths: string[]; // Folder paths or file paths to ignore
   includedPaths: string[]; // Folder paths or file paths to exclusively include (whitelist)
+  reviewTags: string[]; // Tags that trigger note review
+  autoNext: boolean; // Automatically open the next due note after review
+  schedulingAlgorithm: 'fsrs' | 'sm2';
+  totalXP: number;
 }
